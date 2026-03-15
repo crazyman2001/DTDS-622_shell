@@ -12,10 +12,11 @@ from tkinter.scrolledtext import ScrolledText
 DEFAULT_BAUDS = [4800, 9600, 19200, 38400, 57600, 115200, 230400, 460800]
 
 class SerialModule:
-    def __init__(self, name, text_widget, log_file):
+    def __init__(self, name, text_widget, log_file, parse_callback=None):
         self.name = name
         self.text_widget = text_widget
         self.log_file = log_file
+        self.parse_callback = parse_callback
         self.ser = None
         self.thread = None
         self.running = False
@@ -103,6 +104,8 @@ class SerialModule:
                 f.write(line + "\n")
         except Exception:
             pass
+        if self.parse_callback:
+            self.parse_callback(line, self.name)
 
 class App:
     def __init__(self, root):
@@ -196,10 +199,21 @@ class App:
         display1.pack(side="left", fill="both", expand=True, padx=4, pady=2)
         display2.pack(side="left", fill="both", expand=True, padx=4, pady=2)
 
-        self.text1 = ScrolledText(display1, height=25, state="disabled", wrap="none")
+        self.text1 = ScrolledText(display1, height=15, state="disabled", wrap="none")
         self.text1.pack(fill="both", expand=True)
-        self.text2 = ScrolledText(display2, height=25, state="disabled", wrap="none")
+        self.tree1 = ttk.Treeview(display1, columns=("time","type","src","dst","data"), show="headings", height=4)
+        for c,h in [("time","Time"),("type","Type"),("src","Source"),("dst","Destination"),("data","Data")]:
+            self.tree1.heading(c, text=h)
+            self.tree1.column(c, width=110, stretch=True)
+        self.tree1.pack(fill="x", expand=False)
+
+        self.text2 = ScrolledText(display2, height=15, state="disabled", wrap="none")
         self.text2.pack(fill="both", expand=True)
+        self.tree2 = ttk.Treeview(display2, columns=("time","type","src","dst","data"), show="headings", height=4)
+        for c,h in [("time","Time"),("type","Type"),("src","Source"),("dst","Destination"),("data","Data")]:
+            self.tree2.heading(c, text=h)
+            self.tree2.column(c, width=110, stretch=True)
+        self.tree2.pack(fill="x", expand=False)
 
     def refresh_ports(self):
         ports = self.get_ports()
@@ -208,6 +222,69 @@ class App:
             if not cb.get() and ports:
                 cb.set(ports[0])
         messagebox.showinfo("Ports Refreshed", "Serial ports list refreshed.")
+
+    def parse_rx_frame(self, rx_text):
+        # rx_text expected format: +RX:AA...55,... or +RX:AA...55
+        if not rx_text.startswith("+RX:"):
+            return None
+        raw = rx_text[4:]
+        # cut at first comma (RSSI etc)
+        raw = raw.split(",", 1)[0].strip()
+        if len(raw) < 10:
+            return None
+        # Validate hex string
+        if len(raw) % 2 == 1:
+            return None
+        try:
+            b = bytes.fromhex(raw)
+        except Exception:
+            return None
+        if len(b) < 5 or b[0] != 0xAA or b[-1] != 0x55:
+            return None
+        length = b[1]
+        computed = len(b) - 4
+        if length != computed:
+            # allow loose parse ignoring length mismatch
+            pass
+        frame_type = b[2]
+        src = b[3:7]
+        dst = b[7:11]
+        data = b[11:-1]
+        type_map = {
+            0x10: "Broadcast",
+            0x11: "Pairing Req",
+            0x12: "Pairing ACK",
+            0x13: "Ping Req",
+            0x80: "Data ACK",
+            0x82: "Cmd ACK",
+            0x84: "Awake",
+            0x88: "Ping ACK",
+            0x90: "Ping ACK Cmd",
+            0x93: "NACK",
+        }
+        return {
+            "type_code": f"0x{frame_type:02X}",
+            "type_name": type_map.get(frame_type, "Unknown"),
+            "src": src.hex().upper(),
+            "dst": dst.hex().upper(),
+            "data": data.hex().upper(),
+        }
+
+    def on_parse_line(self, line, module_name):
+        # line may include timestamp prefix from append_line; parse from text after '| '
+        text = line
+        if "| " in line:
+            parts = line.split("|", 1)
+            text = parts[1].strip()
+        if text.startswith("+RX:"):
+            frame = self.parse_rx_frame(text)
+            if frame:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                row = (ts, f"{frame['type_code']} {frame['type_name']}", frame['src'], frame['dst'], frame['data'])
+                if module_name == "Module 1":
+                    self.tree1.insert("", "end", values=row)
+                else:
+                    self.tree2.insert("", "end", values=row)
 
     def freq_mhz_to_hz(self, freq_text):
         try:
@@ -273,8 +350,8 @@ class App:
         self.text1.configure(state="normal"); self.text1.delete("1.0", tk.END); self.text1.configure(state="disabled")
         self.text2.configure(state="normal"); self.text2.delete("1.0", tk.END); self.text2.configure(state="disabled")
 
-        self.serial1 = SerialModule("Module 1", self.text1, "module1_rx.log")
-        self.serial2 = SerialModule("Module 2", self.text2, "module2_rx.log")
+        self.serial1 = SerialModule("Module 1", self.text1, "module1_rx.log", parse_callback=self.on_parse_line)
+        self.serial2 = SerialModule("Module 2", self.text2, "module2_rx.log", parse_callback=self.on_parse_line)
         errors = []
         try:
             self.serial1.open(p1, b1)
