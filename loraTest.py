@@ -64,6 +64,25 @@ class SerialModule:
                 break
             time.sleep(0.01)
 
+    def send_at(self, cmd, timeout=1.0):
+        with self.lock:
+            if self.ser is None or not self.ser.is_open:
+                raise RuntimeError("Serial port is not open")
+            cmd_line = cmd.strip() + "\r\n"
+            self.ser.write(cmd_line.encode())
+            self.ser.flush()
+            start = time.time()
+            response = b""
+            while time.time() - start < timeout:
+                if self.ser.in_waiting > 0:
+                    response += self.ser.read(self.ser.in_waiting)
+                time.sleep(0.05)
+            decoded = response.decode(errors="replace").strip()
+            if decoded:
+                for ln in decoded.splitlines():
+                    self.append_line(f"AT> {ln}")
+            return decoded
+
     def append_line(self, line):
         def inner():
             self.text_widget.configure(state="normal")
@@ -113,7 +132,20 @@ class App:
         freq_cb = ttk.Combobox(frame, values=["815", "868", "433", "902", "450"], width=8)
         freq_cb.grid(row=row, column=5, sticky="w")
         freq_cb.set("868")
-        return frame, port_cb, baud_cb, freq_cb
+        row += 1
+        ttk.Label(frame, text="Init AT:").grid(row=row, column=0, sticky="w", pady=(4,0))
+        init_at = ttk.Entry(frame, width=26)
+        init_at.grid(row=row, column=1, sticky="w", pady=(4,0))
+        init_at.insert(0, "AT")
+        ttk.Label(frame, text="Freq AT:").grid(row=row, column=2, sticky="w", padx=(10,0), pady=(4,0))
+        freq_at = ttk.Entry(frame, width=22)
+        freq_at.grid(row=row, column=3, sticky="w", pady=(4,0))
+        freq_at.insert(0, "AT+FREQ={freq}")
+        ttk.Label(frame, text="Send AT:").grid(row=row, column=4, sticky="w", padx=(10,0), pady=(4,0))
+        send_at = ttk.Entry(frame, width=22)
+        send_at.grid(row=row, column=5, sticky="w", pady=(4,0))
+        send_at.insert(0, "AT")
+        return frame, port_cb, baud_cb, freq_cb, init_at, freq_at, send_at
 
     def create_ui(self):
         top = ttk.Frame(self.root, padding=8)
@@ -123,10 +155,10 @@ class App:
         module_top.pack(fill="x", expand=False)
 
         # Module 1
-        self.mod1_frame, self.mod1_port, self.mod1_baud, self.mod1_freq = self.create_module_frame(module_top, "Module 1")
+        self.mod1_frame, self.mod1_port, self.mod1_baud, self.mod1_freq, self.mod1_init_at, self.mod1_freq_at, self.mod1_send_at = self.create_module_frame(module_top, "Module 1")
         self.mod1_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=2)
         # Module 2
-        self.mod2_frame, self.mod2_port, self.mod2_baud, self.mod2_freq = self.create_module_frame(module_top, "Module 2")
+        self.mod2_frame, self.mod2_port, self.mod2_baud, self.mod2_freq, self.mod2_init_at, self.mod2_freq_at, self.mod2_send_at = self.create_module_frame(module_top, "Module 2")
         self.mod2_frame.grid(row=0, column=1, sticky="nsew", padx=4, pady=2)
 
         btn_frame = ttk.Frame(top)
@@ -137,6 +169,8 @@ class App:
         self.disconnect_btn.pack(side="left", padx=4)
         self.refresh_btn = ttk.Button(btn_frame, text="Refresh Ports", command=self.refresh_ports)
         self.refresh_btn.pack(side="left", padx=4)
+        self.send_at_btn = ttk.Button(btn_frame, text="Send AT now", command=self.send_manual_at)
+        self.send_at_btn.pack(side="left", padx=4)
 
         cont = ttk.Frame(self.root, padding=8)
         cont.pack(fill="both", expand=True)
@@ -159,6 +193,18 @@ class App:
                 cb.set(ports[0])
         messagebox.showinfo("Ports Refreshed", "Serial ports list refreshed.")
 
+    def send_init_commands(self, module, init_at, freq_at, freq_value):
+        if module is None:
+            return
+        try:
+            if init_at.strip():
+                module.send_at(init_at.strip())
+            if freq_at.strip():
+                cmd = freq_at.strip().replace("{freq}", str(freq_value))
+                module.send_at(cmd)
+        except Exception as e:
+            module.append_line(f"INIT ERROR: {e}")
+
     def connect_all(self):
         p1 = self.mod1_port.get().strip()
         b1 = self.mod1_baud.get().strip()
@@ -178,11 +224,13 @@ class App:
         errors = []
         try:
             self.serial1.open(p1, b1)
+            self.send_init_commands(self.serial1, self.mod1_init_at.get(), self.mod1_freq_at.get(), self.mod1_freq.get())
         except Exception as e:
             errors.append(f"Module1: {e}")
             self.serial1 = None
         try:
             self.serial2.open(p2, b2)
+            self.send_init_commands(self.serial2, self.mod2_init_at.get(), self.mod2_freq_at.get(), self.mod2_freq.get())
         except Exception as e:
             errors.append(f"Module2: {e}")
             self.serial2 = None
@@ -201,6 +249,18 @@ class App:
         self.serial2 = None
         self.connect_btn.config(state="normal")
         self.disconnect_btn.config(state="disabled")
+
+    def send_manual_at(self):
+        if self.serial1:
+            try:
+                self.serial1.send_at(self.mod1_send_at.get())
+            except Exception as e:
+                self.serial1.append_line(f"SEND AT ERROR: {e}")
+        if self.serial2:
+            try:
+                self.serial2.send_at(self.mod2_send_at.get())
+            except Exception as e:
+                self.serial2.append_line(f"SEND AT ERROR: {e}")
 
     def on_close(self):
         self.disconnect_all()
