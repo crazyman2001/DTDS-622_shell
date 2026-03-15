@@ -64,24 +64,32 @@ class SerialModule:
                 break
             time.sleep(0.01)
 
-    def send_at(self, cmd, timeout=1.0):
+    def send_at(self, cmd, timeout=1.0, expect_ok=True):
         with self.lock:
             if self.ser is None or not self.ser.is_open:
                 raise RuntimeError("Serial port is not open")
             cmd_line = cmd.strip() + "\r\n"
+            self.ser.reset_input_buffer()
             self.ser.write(cmd_line.encode())
             self.ser.flush()
+            self.append_line(f"AT SENT: {cmd.strip()}")
             start = time.time()
-            response = b""
+
+            collected = []
             while time.time() - start < timeout:
-                if self.ser.in_waiting > 0:
-                    response += self.ser.read(self.ser.in_waiting)
-                time.sleep(0.05)
-            decoded = response.decode(errors="replace").strip()
-            if decoded:
-                for ln in decoded.splitlines():
-                    self.append_line(f"AT> {ln}")
-            return decoded
+                line = self.ser.readline()
+                if not line:
+                    continue
+                try:
+                    text = line.decode(errors="replace").strip()
+                except Exception:
+                    text = repr(line)
+                if text:
+                    self.append_line(f"AT> {text}")
+                    collected.append(text)
+                    if expect_ok and text in ("OK", "ERROR"):
+                        break
+            return "\n".join(collected)
 
     def append_line(self, line):
         def inner():
@@ -193,15 +201,34 @@ class App:
                 cb.set(ports[0])
         messagebox.showinfo("Ports Refreshed", "Serial ports list refreshed.")
 
+    def initialize_dtds_module(self, module, freq):
+        if module is None:
+            return
+        try:
+            module.send_at("AT", timeout=1.0)
+            module.send_at("AT+RESET", timeout=2.0)
+            module.send_at("ATE0", timeout=1.0)
+            module.send_at("ATV1", timeout=1.0)
+            module.send_at("AT+MODEM=1", timeout=1.0)
+            module.send_at(f"AT+FREQ={freq}", timeout=1.0)
+            module.send_at("AT+LMCFG=7,0,1", timeout=1.0)
+            module.send_at("AT+LPCFG=8,0,1,0,0", timeout=1.0)
+            module.send_at("AT+LBT=1,-80,10,0", timeout=1.0)
+            module.send_at("AT+TXPWR=22", timeout=1.0)
+            module.send_at("AT+RECV=1,1", timeout=1.0)
+            module.append_line("DTDS initialization sequence complete.")
+        except Exception as e:
+            module.append_line(f"INIT ERROR: {e}")
+
     def send_init_commands(self, module, init_at, freq_at, freq_value):
         if module is None:
             return
         try:
             if init_at.strip():
-                module.send_at(init_at.strip())
+                module.send_at(init_at.strip(), timeout=1.0)
             if freq_at.strip():
                 cmd = freq_at.strip().replace("{freq}", str(freq_value))
-                module.send_at(cmd)
+                module.send_at(cmd, timeout=1.0)
         except Exception as e:
             module.append_line(f"INIT ERROR: {e}")
 
@@ -224,16 +251,24 @@ class App:
         errors = []
         try:
             self.serial1.open(p1, b1)
-            self.send_init_commands(self.serial1, self.mod1_init_at.get(), self.mod1_freq_at.get(), self.mod1_freq.get())
         except Exception as e:
             errors.append(f"Module1: {e}")
             self.serial1 = None
         try:
             self.serial2.open(p2, b2)
-            self.send_init_commands(self.serial2, self.mod2_init_at.get(), self.mod2_freq_at.get(), self.mod2_freq.get())
         except Exception as e:
             errors.append(f"Module2: {e}")
             self.serial2 = None
+
+        if not errors:
+            # Asynchronous initialization to keep GUI responsive
+            if self.serial1:
+                threading.Thread(target=self.initialize_dtds_module, args=(self.serial1, self.mod1_freq.get()), daemon=True).start()
+            if self.serial2:
+                threading.Thread(target=self.initialize_dtds_module, args=(self.serial2, self.mod2_freq.get()), daemon=True).start()
+        else:
+            # If any connect error, close all
+            self.disconnect_all()
 
         if errors:
             messagebox.showerror("Connect errors", "\n".join(errors))
