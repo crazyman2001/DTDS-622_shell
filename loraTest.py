@@ -199,21 +199,25 @@ class App:
         display1.pack(side="left", fill="both", expand=True, padx=4, pady=2)
         display2.pack(side="left", fill="both", expand=True, padx=4, pady=2)
 
-        self.text1 = ScrolledText(display1, height=15, state="disabled", wrap="none")
-        self.text1.pack(fill="both", expand=True)
-        self.tree1 = ttk.Treeview(display1, columns=("time","type","src","dst","data"), show="headings", height=4)
+        self.pane1 = ttk.PanedWindow(display1, orient=tk.VERTICAL)
+        self.pane1.pack(fill="both", expand=True)
+        self.text1 = ScrolledText(self.pane1, state="disabled", wrap="none")
+        self.pane1.add(self.text1, weight=3)
+        self.tree1 = ttk.Treeview(self.pane1, columns=("time","type","src","dst","data"), show="headings")
         for c,h in [("time","Time"),("type","Type"),("src","Source"),("dst","Destination"),("data","Data")]:
             self.tree1.heading(c, text=h)
             self.tree1.column(c, width=110, stretch=True)
-        self.tree1.pack(fill="x", expand=False)
+        self.pane1.add(self.tree1, weight=1)
 
-        self.text2 = ScrolledText(display2, height=15, state="disabled", wrap="none")
-        self.text2.pack(fill="both", expand=True)
-        self.tree2 = ttk.Treeview(display2, columns=("time","type","src","dst","data"), show="headings", height=4)
+        self.pane2 = ttk.PanedWindow(display2, orient=tk.VERTICAL)
+        self.pane2.pack(fill="both", expand=True)
+        self.text2 = ScrolledText(self.pane2, state="disabled", wrap="none")
+        self.pane2.add(self.text2, weight=3)
+        self.tree2 = ttk.Treeview(self.pane2, columns=("time","type","src","dst","data"), show="headings")
         for c,h in [("time","Time"),("type","Type"),("src","Source"),("dst","Destination"),("data","Data")]:
             self.tree2.heading(c, text=h)
             self.tree2.column(c, width=110, stretch=True)
-        self.tree2.pack(fill="x", expand=False)
+        self.pane2.add(self.tree2, weight=1)
 
     def refresh_ports(self):
         ports = self.get_ports()
@@ -247,9 +251,12 @@ class App:
             # allow loose parse ignoring length mismatch
             pass
         frame_type = b[2]
-        src = b[3:7]
-        dst = b[7:11]
-        data = b[11:-1]
+        # 8-byte MAC addresses
+        if len(b) < 1 + 1 + 1 + 8 + 8 + 1:
+            return None
+        src = b[3:11]
+        dst = b[11:19]
+        data = b[19:-1]
         type_map = {
             0x10: "Broadcast",
             0x11: "Pairing Req",
@@ -267,7 +274,7 @@ class App:
             "type_name": type_map.get(frame_type, "Unknown"),
             "src": src.hex().upper(),
             "dst": dst.hex().upper(),
-            "data": data.hex().upper(),
+            "data": data.hex().upper() if data else "",
         }
 
     def on_parse_line(self, line, module_name):
