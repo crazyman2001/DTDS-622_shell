@@ -19,7 +19,7 @@ class SerialModule:
         self.ser = None
         self.thread = None
         self.running = False
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def open(self, port, baud):
         with self.lock:
