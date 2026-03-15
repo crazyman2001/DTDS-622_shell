@@ -2,6 +2,7 @@
 import threading
 import time
 import sys
+import re
 from datetime import datetime
 import serial
 import serial.tools.list_ports
@@ -293,8 +294,24 @@ class App:
         if "| " in line:
             parts = line.split("|", 1)
             text = parts[1].strip()
-        if text.startswith("+RX:"):
-            frame = self.parse_rx_frame(text)
+        if module_name not in self.partial_rx:
+            self.partial_rx[module_name] = ""
+        # Append any line content containing +RX data
+        if "+RX:" in text:
+            # start new packet buffer at first +RX:
+            self.partial_rx[module_name] = text[text.index("+RX:"):]
+        else:
+            # If we already had partial from previous line, append extra data
+            if self.partial_rx[module_name]:
+                self.partial_rx[module_name] += text
+
+        # Try parsing complete packets from buffer
+        while True:
+            m = self.rx_pattern.search(self.partial_rx[module_name])
+            if not m:
+                break
+            rx_field = m.group(0)
+            frame = self.parse_rx_frame(rx_field)
             if frame:
                 ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 row = (ts, f"{frame['type_code']} {frame['type_name']}", frame['src'], frame['dst'], frame['data'])
@@ -302,6 +319,9 @@ class App:
                     self.tree1.insert("", "end", values=row)
                 else:
                     self.tree2.insert("", "end", values=row)
+            # Remove parsed prefix from buffer
+            self.partial_rx[module_name] = self.partial_rx[module_name][m.end():]
+            # Continue matching any additional complete packets
 
     def freq_mhz_to_hz(self, freq_text):
         try:
@@ -367,6 +387,8 @@ class App:
         self.text1.configure(state="normal"); self.text1.delete("1.0", tk.END); self.text1.configure(state="disabled")
         self.text2.configure(state="normal"); self.text2.delete("1.0", tk.END); self.text2.configure(state="disabled")
 
+        self.partial_rx = {}
+        self.rx_pattern = re.compile(r"\+RX:[0-9A-Fa-f]+,-?\d+,\d+,\d+")
         self.serial1 = SerialModule("Module 1", self.text1, "module1_rx.log", parse_callback=self.on_parse_line)
         self.serial2 = SerialModule("Module 2", self.text2, "module2_rx.log", parse_callback=self.on_parse_line)
         errors = []
