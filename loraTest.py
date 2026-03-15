@@ -136,14 +136,22 @@ class App:
         baud_cb = ttk.Combobox(frame, values=DEFAULT_BAUDS, width=10)
         baud_cb.grid(row=row, column=3, sticky="w")
         baud_cb.set(115200)
-        ttk.Label(frame, text="Freq:").grid(row=row, column=4, sticky="w", padx=(10,0))
+        ttk.Label(frame, text="Freq (MHz):").grid(row=row, column=4, sticky="w", padx=(10,0))
         freq_cb = ttk.Combobox(frame, values=["815", "868", "433", "902", "450"], width=8)
         freq_cb.grid(row=row, column=5, sticky="w")
         freq_cb.set("868")
         row += 1
-        ttk.Label(frame, text="Init AT:").grid(row=row, column=0, sticky="w", pady=(4,0))
+        ttk.Label(frame, text="Recv Mode:").grid(row=row, column=0, sticky="w", pady=(4,0))
+        recv_mode_cb = ttk.Combobox(frame, values=["0", "1"], width=4)
+        recv_mode_cb.grid(row=row, column=1, sticky="w", pady=(4,0))
+        recv_mode_cb.set("0")
+        ttk.Label(frame, text="Recv Verbose:").grid(row=row, column=2, sticky="w", padx=(10,0), pady=(4,0))
+        recv_verbose_cb = ttk.Combobox(frame, values=["0", "1"], width=4)
+        recv_verbose_cb.grid(row=row, column=3, sticky="w", pady=(4,0))
+        recv_verbose_cb.set("1")
+        ttk.Label(frame, text="Init AT:").grid(row=row, column=4, sticky="w", pady=(4,0))
         init_at = ttk.Entry(frame, width=26)
-        init_at.grid(row=row, column=1, sticky="w", pady=(4,0))
+        init_at.grid(row=row, column=5, sticky="w", pady=(4,0))
         init_at.insert(0, "AT")
         ttk.Label(frame, text="Freq AT:").grid(row=row, column=2, sticky="w", padx=(10,0), pady=(4,0))
         freq_at = ttk.Entry(frame, width=22)
@@ -153,7 +161,7 @@ class App:
         send_at = ttk.Entry(frame, width=22)
         send_at.grid(row=row, column=5, sticky="w", pady=(4,0))
         send_at.insert(0, "AT")
-        return frame, port_cb, baud_cb, freq_cb, init_at, freq_at, send_at
+        return frame, port_cb, baud_cb, freq_cb, recv_mode_cb, recv_verbose_cb, init_at, freq_at, send_at
 
     def create_ui(self):
         top = ttk.Frame(self.root, padding=8)
@@ -163,10 +171,10 @@ class App:
         module_top.pack(fill="x", expand=False)
 
         # Module 1
-        self.mod1_frame, self.mod1_port, self.mod1_baud, self.mod1_freq, self.mod1_init_at, self.mod1_freq_at, self.mod1_send_at = self.create_module_frame(module_top, "Module 1")
+        self.mod1_frame, self.mod1_port, self.mod1_baud, self.mod1_freq, self.mod1_recv_mode, self.mod1_recv_verbose, self.mod1_init_at, self.mod1_freq_at, self.mod1_send_at = self.create_module_frame(module_top, "Module 1")
         self.mod1_frame.grid(row=0, column=0, sticky="nsew", padx=4, pady=2)
         # Module 2
-        self.mod2_frame, self.mod2_port, self.mod2_baud, self.mod2_freq, self.mod2_init_at, self.mod2_freq_at, self.mod2_send_at = self.create_module_frame(module_top, "Module 2")
+        self.mod2_frame, self.mod2_port, self.mod2_baud, self.mod2_freq, self.mod2_recv_mode, self.mod2_recv_verbose, self.mod2_init_at, self.mod2_freq_at, self.mod2_send_at = self.create_module_frame(module_top, "Module 2")
         self.mod2_frame.grid(row=0, column=1, sticky="nsew", padx=4, pady=2)
 
         btn_frame = ttk.Frame(top)
@@ -201,21 +209,40 @@ class App:
                 cb.set(ports[0])
         messagebox.showinfo("Ports Refreshed", "Serial ports list refreshed.")
 
-    def initialize_dtds_module(self, module, freq):
+    def freq_mhz_to_hz(self, freq_text):
+        try:
+            f = float(freq_text)
+            if f < 1000:
+                return int(f * 1_000_000)
+            return int(f)
+        except Exception:
+            return None
+
+    def initialize_dtds_module(self, module, freq_text, recv_mode, recv_verbose):
         if module is None:
             return
+        freq_hz = self.freq_mhz_to_hz(freq_text)
+        if freq_hz is None:
+            module.append_line(f"INIT ERROR: invalid frequency '{freq_text}'")
+            return
+        recv_mode = str(recv_mode).strip() or "0"
+        recv_verbose = str(recv_verbose).strip() or "1"
+        if recv_mode not in ("0", "1"):
+            recv_mode = "0"
+        if recv_verbose not in ("0", "1"):
+            recv_verbose = "1"
         try:
             module.send_at("AT", timeout=1.0)
             module.send_at("AT+RESET", timeout=2.0)
             module.send_at("ATE0", timeout=1.0)
             module.send_at("ATV1", timeout=1.0)
             module.send_at("AT+MODEM=1", timeout=1.0)
-            module.send_at(f"AT+FREQ={freq}", timeout=1.0)
+            module.send_at(f"AT+FREQ={freq_hz}", timeout=1.0)
             module.send_at("AT+LMCFG=7,0,1", timeout=1.0)
             module.send_at("AT+LPCFG=8,0,1,0,0", timeout=1.0)
             module.send_at("AT+LBT=1,-80,10,0", timeout=1.0)
             module.send_at("AT+TXPWR=22", timeout=1.0)
-            module.send_at("AT+RECV=1,1", timeout=1.0)
+            module.send_at(f"AT+RECV={recv_mode},{recv_verbose}", timeout=1.0)
             module.append_line("DTDS initialization sequence complete.")
         except Exception as e:
             module.append_line(f"INIT ERROR: {e}")
@@ -263,9 +290,27 @@ class App:
         if not errors:
             # Asynchronous initialization to keep GUI responsive
             if self.serial1:
-                threading.Thread(target=self.initialize_dtds_module, args=(self.serial1, self.mod1_freq.get()), daemon=True).start()
+                threading.Thread(
+                    target=self.initialize_dtds_module,
+                    args=(
+                        self.serial1,
+                        self.mod1_freq.get(),
+                        self.mod1_recv_mode.get(),
+                        self.mod1_recv_verbose.get(),
+                    ),
+                    daemon=True,
+                ).start()
             if self.serial2:
-                threading.Thread(target=self.initialize_dtds_module, args=(self.serial2, self.mod2_freq.get()), daemon=True).start()
+                threading.Thread(
+                    target=self.initialize_dtds_module,
+                    args=(
+                        self.serial2,
+                        self.mod2_freq.get(),
+                        self.mod2_recv_mode.get(),
+                        self.mod2_recv_verbose.get(),
+                    ),
+                    daemon=True,
+                ).start()
         else:
             # If any connect error, close all
             self.disconnect_all()
